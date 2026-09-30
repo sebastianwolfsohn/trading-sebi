@@ -1,11 +1,15 @@
 import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
-import { deleteExecution, getTrade, getTrades } from "@/lib/db";
+import { deleteExecution, getRules, getTrade, getTrades } from "@/lib/db";
 import { db, DISPLAY_TZ } from "@/lib/supabase";
 import { pnlOf, rMultiple } from "@/lib/stats";
 import { durationLabel, formatDateTime } from "@/lib/time";
 import { money, num, pnlClass } from "@/lib/format";
+import { deleteTradeAction, removeScreenshotAction } from "@/lib/actions";
+import { resolveScreenshots } from "@/lib/screenshots";
+import { ScreenshotPaste } from "@/components/ScreenshotPaste";
+import { ConfirmButton } from "@/components/ConfirmButton";
 
 export const dynamic = "force-dynamic";
 
@@ -24,7 +28,11 @@ async function saveJournal(formData: FormData) {
     ...formData.getAll("mistake").map(String),
     ...String(formData.get("mistakes_extra") ?? "").split(",").map((s) => s.trim()).filter(Boolean),
   ];
-  const screenshots = String(formData.get("screenshots") ?? "").split(/\s+/).map((s) => s.trim()).filter((s) => /^https?:\/\//.test(s));
+  const links = String(formData.get("screenshots") ?? "").split(/\s+/).map((s) => s.trim()).filter((s) => /^https?:\/\//.test(s));
+  // Las capturas subidas (storage:...) no están en el textarea: se conservan.
+  const prev = await db().from("trade_journal").select("screenshots").eq("trade_id", id).maybeSingle();
+  const stored = ((prev.data?.screenshots as string[] | undefined) ?? []).filter((x) => x.startsWith("storage:"));
+  const screenshots = [...stored, ...links];
   const rating = numOrNull(formData.get("rating"));
   const { error } = await db().from("trade_journal").upsert({
     trade_id: id,
@@ -37,22 +45,13 @@ async function saveJournal(formData: FormData) {
     planned_target: numOrNull(formData.get("planned_target")),
     pnl_override: numOrNull(formData.get("pnl_override")),
     screenshots,
+    rules_followed: formData.getAll("rule").map(String),
+    rules_checked: true,
     updated_at: new Date().toISOString(),
   });
   if (error) throw new Error(error.message);
   revalidatePath(`/trades/${encodeURIComponent(id)}`);
   redirect(`/trades/${encodeURIComponent(id)}?saved=1`);
-}
-
-async function removeTrade(formData: FormData) {
-  "use server";
-  const id = String(formData.get("trade_id"));
-  const data = await getTrade(id);
-  if (data) {
-    for (const e of data.executions) await deleteExecution(e.id);
-    await db().from("trades").delete().eq("id", id);
-  }
-  redirect("/trades");
 }
 
 async function removeExecution(formData: FormData) {
@@ -72,6 +71,11 @@ export default async function TradeDetail({ params, searchParams }: { params: Pr
   const r = rMultiple(t);
   const setups = [...new Set((await getTrades()).map((x) => x.journal?.setup).filter(Boolean) as string[])];
   const extraMistakes = (j?.mistakes ?? []).filter((m) => !MISTAKES.includes(m)).join(", ");
+  const rules = await getRules();
+  const shots = await resolveScreenshots(j?.screenshots ?? []);
+  const linkShots = (j?.screenshots ?? []).filter((x) => !x.startsWith("storage:"));
+  const manual = t.id.startsWith("manual:");
+  const followed = new Set(j?.rules_followed ?? []);
 
   return (
     <div className="space-y-4">
@@ -82,13 +86,14 @@ export default async function TradeDetail({ params, searchParams }: { params: Pr
         <span className={`text-xl font-semibold ${pnlClass(t.closed_at ? pnlOf(t) : null)}`}>{t.closed_at ? money(pnlOf(t)) : "Abierto"}</span>
         {j?.pnl_override != null && <span className="text-xs text-muted">(P&L corregido a mano; automático {money(t.net_pnl)})</span>}
         {saved && <span className="text-sm text-win">Guardado</span>}
+        {manual && <Link href={`/trades/${encodeURIComponent(t.id)}/edit`} className="btn-ghost">Editar resultado</Link>}
       </div>
 
       <div className="grid grid-cols-2 gap-3 md:grid-cols-6">
         <Info label="Apertura" value={formatDateTime(t.opened_at, DISPLAY_TZ)} />
-        <Info label="Duración" value={durationLabel(t.opened_at, t.closed_at)} />
+        <Info label="Duración" value={manual ? "manual" : durationLabel(t.opened_at, t.closed_at)} />
         <Info label="Contratos máx." value={num(t.max_qty, 0)} />
-        <Info label="Entrada / salida" value={`${num(t.avg_entry)} → ${num(t.avg_exit)}`} />
+        <Info label="Entrada / salida" value={manual ? "—" : `${num(t.avg_entry)} → ${num(t.avg_exit)}`} />
         <Info label="Bruto / comisiones" value={`${money(t.gross_pnl)} / ${money(t.commissions, false)}`} />
         <Info label="R múltiple" value={r == null ? "—" : r.toFixed(2)} />
       </div>
@@ -124,6 +129,25 @@ export default async function TradeDetail({ params, searchParams }: { params: Pr
             </Field>
           </div>
 
+          <Field label="Checklist de reglas">
+            {rules.length === 0 ? (
+              <p className="text-sm text-muted">No tenés reglas cargadas. <Link href="/reglas" className="text-accent underline">Agregalas acá</Link>.</p>
+            ) : (
+              <div className="space-y-1.5">
+                {rules.map((r) => (
+                  <label key={r.id} className="flex cursor-pointer items-center gap-2 text-sm">
+                    <input type="checkbox" name="rule" value={r.text} defaultChecked={followed.has(r.text)} className="h-4 w-4 accent-green-500" />
+                    {r.text}
+                  </label>
+                ))}
+                <p className="text-xs text-muted">
+                  {j?.rules_checked ? `Cumpliste ${rules.filter((r) => followed.has(r.text)).length} de ${rules.length}.` : "Marcá las que cumpliste y guardá."}{" "}
+                  <Link href="/reglas" className="text-accent hover:underline">Editar reglas</Link>
+                </p>
+              </div>
+            )}
+          </Field>
+
           <Field label="Errores">
             <div className="flex flex-wrap gap-2">
               {MISTAKES.map((m) => (
@@ -140,17 +164,17 @@ export default async function TradeDetail({ params, searchParams }: { params: Pr
             <textarea className="input min-h-[120px]" name="notes" defaultValue={j?.notes ?? ""} placeholder="¿Por qué entraste? ¿Qué harías distinto?" />
           </Field>
 
-          <Field label="Capturas (links de TradingView o imágenes, uno por línea)">
-            <textarea className="input min-h-[60px]" name="screenshots" defaultValue={(j?.screenshots ?? []).join("\n")} placeholder="https://www.tradingview.com/x/..." />
+          <Field label="Links de capturas (opcional, uno por línea)">
+            <textarea className="input min-h-[60px]" name="screenshots" defaultValue={linkShots.join("\n")} placeholder="https://www.tradingview.com/x/..." />
           </Field>
 
           <button className="btn">Guardar</button>
         </form>
 
         <div className="space-y-4">
-          <form action={removeTrade} className="card">
+          <form action={deleteTradeAction} className="card">
             <input type="hidden" name="trade_id" value={t.id} />
-            <button className="w-full rounded-lg border border-loss/40 px-3 py-2 text-sm text-loss hover:bg-loss/10">Borrar este trade</button>
+            <ConfirmButton message="¿Borrar este trade? No se puede deshacer." className="w-full rounded-lg border border-loss/40 px-3 py-2 text-sm text-loss hover:bg-loss/10">Borrar este trade</ConfirmButton>
             <p className="mt-2 text-xs text-muted">Borra el trade{executions.length ? " y sus ejecuciones" : ""}. No se puede deshacer.</p>
           </form>
           <div className="card">
@@ -170,21 +194,31 @@ export default async function TradeDetail({ params, searchParams }: { params: Pr
               ))}
             </ul>
           </div>
-          {(j?.screenshots ?? []).length > 0 && (
-            <div className="card space-y-2">
-              <div className="label">Capturas</div>
-              {j!.screenshots.map((s) => (
-                <a key={s} href={s} target="_blank" rel="noreferrer" className="block">
-                  {/\.(png|jpe?g|gif|webp)(\?|$)/i.test(s) ? (
+          <div className="card space-y-3">
+            <div className="label">Capturas del gráfico</div>
+            <ScreenshotPaste tradeId={t.id} />
+            {shots.map((sh) => (
+              <div key={sh.key} className="space-y-1">
+                {sh.url === "" ? (
+                  <p className="text-xs text-muted">No se pudo cargar esta captura.</p>
+                ) : (
+                <a href={sh.url} target="_blank" rel="noreferrer" className="block">
+                  {sh.image ? (
                     // eslint-disable-next-line @next/next/no-img-element
-                    <img src={s} alt="Captura del trade" className="rounded-lg border border-line" />
+                    <img src={sh.url} alt="Captura del trade" className="rounded-lg border border-line" />
                   ) : (
-                    <span className="break-all text-sm text-accent underline">{s}</span>
+                    <span className="break-all text-sm text-accent underline">{sh.url}</span>
                   )}
                 </a>
-              ))}
-            </div>
-          )}
+                )}
+                <form action={removeScreenshotAction} className="text-right">
+                  <input type="hidden" name="trade_id" value={t.id} />
+                  <input type="hidden" name="key" value={sh.key} />
+                  <button className="text-xs text-muted hover:text-loss">Quitar captura</button>
+                </form>
+              </div>
+            ))}
+          </div>
         </div>
       </div>
     </div>

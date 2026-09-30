@@ -4,6 +4,8 @@ import { DISPLAY_TZ, TRADING_TZ } from "@/lib/supabase";
 import { pnlOf, rMultiple, computeStats } from "@/lib/stats";
 import { durationLabel, formatDateTime, tradingDay } from "@/lib/time";
 import { money, num, pct, pnlClass } from "@/lib/format";
+import { deleteTradeAction } from "@/lib/actions";
+import { ConfirmButton } from "@/components/ConfirmButton";
 
 export const dynamic = "force-dynamic";
 
@@ -58,7 +60,7 @@ export default async function TradesPage({ searchParams }: { searchParams: Promi
       </div>
 
       <div className="card overflow-x-auto p-0">
-        <table className="table min-w-[880px]">
+        <table className="table min-w-[940px]">
           <thead>
             <tr>
               <th>Apertura</th>
@@ -71,11 +73,12 @@ export default async function TradesPage({ searchParams }: { searchParams: Promi
               <th className="text-right">P&L neto</th>
               <th className="text-right">R</th>
               <th>Setup</th>
+              <th className="w-20"></th>
             </tr>
           </thead>
           <tbody>
             {trades.length === 0 && (
-              <tr><td colSpan={10} className="py-8 text-center text-muted">No hay trades con estos filtros.</td></tr>
+              <tr><td colSpan={11} className="py-8 text-center text-muted">No hay trades con estos filtros.</td></tr>
             )}
             {trades.map((t) => {
               const r = rMultiple(t);
@@ -92,6 +95,24 @@ export default async function TradesPage({ searchParams }: { searchParams: Promi
                   <td className={`text-right font-medium ${pnlClass(t.closed_at ? pnlOf(t) : null)}`}>{t.closed_at ? money(pnlOf(t)) : "abierto"}</td>
                   <td className="text-right">{r == null ? "—" : r.toFixed(2)}</td>
                   <td className="text-muted">{t.journal?.setup ?? ""}</td>
+                  <td>
+                    <div className="flex items-center justify-end gap-1">
+                      <Link
+                        href={manual ? `/trades/${encodeURIComponent(t.id)}/edit` : `/trades/${encodeURIComponent(t.id)}`}
+                        className="rounded-md px-2 py-1 text-muted hover:bg-line hover:text-slate-100"
+                        title="Editar"
+                        aria-label="Editar"
+                      >
+                        ✎
+                      </Link>
+                      <form action={deleteTradeAction}>
+                        <input type="hidden" name="trade_id" value={t.id} />
+                        <ConfirmButton message="¿Borrar este trade? No se puede deshacer." title="Borrar" className="rounded-md px-2 py-1 text-muted hover:bg-loss/10 hover:text-loss">
+                          🗑
+                        </ConfirmButton>
+                      </form>
+                    </div>
+                  </td>
                 </tr>
               );
             })}

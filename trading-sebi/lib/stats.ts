@@ -24,6 +24,8 @@ export type TradeRow = {
     planned_target: number | null;
     pnl_override: number | null;
     screenshots: string[];
+    rules_followed?: string[];
+    rules_checked?: boolean;
   } | null;
 };
 
@@ -158,14 +160,31 @@ export const byHour = (trades: TradeRow[], tz: string) =>
   groupBy(trades, (t) => `${String(hourIn(t.opened_at, tz)).padStart(2, "0")}h`).sort((a, b) => a.key.localeCompare(b.key));
 
 // ---------- Reglas de la cuenta Apex ----------
+// Por defecto: Apex 4.0, cuenta 50K EOD en PA (reglas publicadas en abril 2026).
+// Todo es configurable desde la pantalla Cuenta Apex por si Apex cambia algo.
 
 export type AccountRules = {
   starting_balance: number;
   drawdown_amount: number;
-  drawdown_type: string;
+  drawdown_type: string; // eod_trail | intraday_trail | static
   consistency_pct: number;
-  min_trading_days: number;
+  min_trading_days: number; // días calificados mínimos para pedir payout
+  daily_loss_limit?: number | null;
+  daily_profit_target?: number | null;
+  min_day_profit?: number | null; // ganancia mínima para que un día califique
+  min_payout?: number | null;
+  payouts_taken?: number | null;
+  last_payout_at?: string | null; // yyyy-mm-dd; la consistencia se mide desde acá
 };
+
+export const PAYOUT_CAPS_50K = [1500, 1500, 2000, 2500, 2500, 3000];
+
+/** Límite de contratos (minis; 1 mini = 10 micros) según el profit de la cuenta 50K. */
+export function contractLimit50k(profit: number): number {
+  if (profit < 1500) return 2;
+  if (profit < 3000) return 3;
+  return 4;
+}
 
 export type ApexStatus = {
   balance: number;
@@ -174,58 +193,141 @@ export type ApexStatus = {
   liquidation: number;
   distanceToLiquidation: number;
   trailingLocked: boolean;
+  safetyNet: number;
+  minPayoutBalance: number;
   tradingDays: number;
   profitableDays: number;
+  qualifyingDays: number;
   bestDay: DayPnl | null;
   bestDayPct: number | null;
   consistencyOk: boolean;
   profitNeededForConsistency: number;
+  cycleProfit: number;
+  payoutEligible: boolean;
+  payoutMissing: string[];
+  payoutCap: number;
+  maxPayoutNow: number;
+  contractLimit: number;
 };
 
-/**
- * Estado aproximado de la cuenta con las reglas de Apex. Ojo: con trailing intradía,
- * Apex sigue el pico incluyendo ganancias NO realizadas. Acá solo vemos P&L realizado,
- * así que el umbral real puede estar más alto que el que mostramos.
- */
+const r2 = (n: number) => Math.round(n * 100) / 100;
+
 export function apexStatus(days: DayPnl[], trades: TradeRow[], rules: AccountRules): ApexStatus {
   const start = rules.starting_balance;
+  const dd = rules.drawdown_amount;
+  const lockLevel = start + 100;
   let balance = start;
   let peak = start;
-  const chrono = trades.filter((t) => t.closed_at).sort((a, b) => Date.parse(a.closed_at!) - Date.parse(b.closed_at!));
 
   if (rules.drawdown_type === "eod_trail") {
+    // El umbral solo sube con el balance de CIERRE de cada día.
     for (const d of days) {
       balance += d.pnl;
       peak = Math.max(peak, balance);
     }
   } else {
+    const chrono = trades.filter((t) => t.closed_at).sort((a, b) => Date.parse(a.closed_at!) - Date.parse(b.closed_at!));
     for (const t of chrono) {
       balance += pnlOf(t);
       if (rules.drawdown_type !== "static") peak = Math.max(peak, balance);
     }
   }
 
-  const lockLevel = start + 100;
-  const trailing = peak - rules.drawdown_amount;
-  const liquidation = rules.drawdown_type === "static" ? start - rules.drawdown_amount : Math.min(trailing, lockLevel);
+  const trailing = peak - dd;
+  const liquidation = rules.drawdown_type === "static" ? start - dd : Math.min(trailing, lockLevel);
   const profit = balance - start;
-  const best = days.reduce<DayPnl | null>((b, d) => (d.pnl > (b?.pnl ?? 0) ? d : b), null);
-  const bestDayPct = best && profit > 0 ? (best.pnl / profit) * 100 : null;
+  const safetyNet = start + dd + 100;
+  const minPayout = rules.min_payout ?? 500;
+  const minPayoutBalance = safetyNet + minPayout;
+
+  // Ciclo actual: desde el último payout.
+  const cycle = rules.last_payout_at ? days.filter((d) => d.day > rules.last_payout_at!) : days;
+  const cycleProfit = cycle.reduce((a, d) => a + d.pnl, 0);
+  const minDay = rules.min_day_profit ?? 250;
+  const qualifyingDays = cycle.filter((d) => d.pnl >= minDay).length;
+  const best = cycle.reduce<DayPnl | null>((b, d) => (d.pnl > (b?.pnl ?? 0) ? d : b), null);
+  const bestDayPct = best && cycleProfit > 0 ? (best.pnl / cycleProfit) * 100 : null;
   const consistencyOk = bestDayPct == null ? true : bestDayPct <= rules.consistency_pct;
-  const profitNeeded = best ? Math.max(0, best.pnl / (rules.consistency_pct / 100) - profit) : 0;
+  const profitNeeded = best ? Math.max(0, best.pnl / (rules.consistency_pct / 100) - cycleProfit) : 0;
+
+  const payoutCap = PAYOUT_CAPS_50K[Math.min(rules.payouts_taken ?? 0, PAYOUT_CAPS_50K.length - 1)];
+  const maxPayoutNow = Math.max(0, Math.min(payoutCap, balance - safetyNet));
+
+  const missing: string[] = [];
+  if (qualifyingDays < rules.min_trading_days)
+    missing.push(`${rules.min_trading_days - qualifyingDays} día(s) más con +$${minDay} o más`);
+  if (!consistencyOk) missing.push(`consistencia: tu mejor día pesa ${Math.round(bestDayPct!)}% (máx. ${rules.consistency_pct}%)`);
+  if (balance < minPayoutBalance) missing.push(`$${r2(minPayoutBalance - balance).toLocaleString("en-US")} más de balance (mínimo $${minPayoutBalance.toLocaleString("en-US")})`);
 
   return {
-    balance: Math.round(balance * 100) / 100,
-    profit: Math.round(profit * 100) / 100,
-    peakBalance: Math.round(peak * 100) / 100,
-    liquidation: Math.round(liquidation * 100) / 100,
-    distanceToLiquidation: Math.round((balance - liquidation) * 100) / 100,
+    balance: r2(balance),
+    profit: r2(profit),
+    peakBalance: r2(peak),
+    liquidation: r2(liquidation),
+    distanceToLiquidation: r2(balance - liquidation),
     trailingLocked: rules.drawdown_type !== "static" && trailing >= lockLevel,
+    safetyNet,
+    minPayoutBalance,
     tradingDays: days.length,
     profitableDays: days.filter((d) => d.pnl > 0).length,
+    qualifyingDays,
     bestDay: best,
     bestDayPct: bestDayPct == null ? null : Math.round(bestDayPct * 10) / 10,
     consistencyOk,
-    profitNeededForConsistency: Math.round(profitNeeded * 100) / 100,
+    profitNeededForConsistency: r2(profitNeeded),
+    cycleProfit: r2(cycleProfit),
+    payoutEligible: missing.length === 0,
+    payoutMissing: missing,
+    payoutCap,
+    maxPayoutNow: r2(maxPayoutNow),
+    contractLimit: contractLimit50k(profit),
   };
+}
+
+export type TodayStatus = {
+  day: string;
+  pnl: number;
+  trades: number;
+  wins: number;
+  dllRemaining: number | null;
+  dllUsedPct: number | null;
+  targetPct: number | null;
+  level: "ok" | "warn" | "stop";
+};
+
+/** P&L de hoy contra el límite diario de pérdida (DLL) y el objetivo. */
+export function todayStatus(trades: TradeRow[], tz: string, dll?: number | null, target?: number | null, now = new Date()): TodayStatus {
+  const day = tradingDay(now, tz);
+  const list = trades.filter((t) => t.closed_at && tradingDay(t.closed_at, tz) === day);
+  const pnl = r2(list.reduce((a, t) => a + pnlOf(t), 0));
+  const loss = Math.max(0, -pnl);
+  const dllUsedPct = dll ? Math.min(1, loss / dll) : null;
+  const level = dllUsedPct == null ? "ok" : dllUsedPct >= 0.8 ? "stop" : dllUsedPct >= 0.5 ? "warn" : "ok";
+  return {
+    day,
+    pnl,
+    trades: list.length,
+    wins: list.filter((t) => pnlOf(t) > 0).length,
+    dllRemaining: dll ? r2(dll - loss) : null,
+    dllUsedPct,
+    targetPct: target && pnl > 0 ? Math.min(1, pnl / target) : target ? 0 : null,
+    level,
+  };
+}
+
+/** Win rate y P&L separando trades donde cumpliste todas tus reglas y donde no. */
+export const followedAll = (t: TradeRow, activeRules: string[]) =>
+  activeRules.every((r) => (t.journal?.rules_followed ?? []).includes(r));
+
+export function rulesImpact(trades: TradeRow[], activeRules: string[]) {
+  const checked = trades.filter((t) => t.closed_at && t.journal?.rules_checked);
+  const follow = checked.filter((t) => followedAll(t, activeRules));
+  const broke = checked.filter((t) => !followedAll(t, activeRules));
+  const agg = (l: TradeRow[]) => ({
+    trades: l.length,
+    pnl: r2(l.reduce((a, t) => a + pnlOf(t), 0)),
+    winRate: l.length ? l.filter((t) => pnlOf(t) > 0).length / l.length : 0,
+    avg: l.length ? r2(l.reduce((a, t) => a + pnlOf(t), 0) / l.length) : 0,
+  });
+  return { checked: checked.length, follow: agg(follow), broke: agg(broke) };
 }

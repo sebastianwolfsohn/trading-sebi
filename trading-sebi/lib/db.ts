@@ -15,7 +15,39 @@ export type Account = {
   drawdown_amount: number;
   consistency_pct: number;
   min_trading_days: number;
+  phase: string;
+  daily_loss_limit: number | null;
+  daily_profit_target: number | null;
+  min_day_profit: number;
+  min_payout: number;
+  payouts_taken: number;
+  last_payout_at: string | null;
 };
+
+export type Rule = { id: string; text: string; position: number; active: boolean };
+
+export async function getRules(includeInactive = false): Promise<Rule[]> {
+  let q = db().from("rules").select("*").order("position").order("created_at");
+  if (!includeInactive) q = q.eq("active", true);
+  return check(await q) as Rule[];
+}
+
+/** Reglas de la cuenta en el formato que usa lib/stats. */
+export function accountRules(a: Account) {
+  return {
+    starting_balance: Number(a.starting_balance),
+    drawdown_amount: Number(a.drawdown_amount),
+    drawdown_type: a.drawdown_type,
+    consistency_pct: Number(a.consistency_pct),
+    min_trading_days: Number(a.min_trading_days),
+    daily_loss_limit: a.daily_loss_limit == null ? null : Number(a.daily_loss_limit),
+    daily_profit_target: a.daily_profit_target == null ? null : Number(a.daily_profit_target),
+    min_day_profit: Number(a.min_day_profit ?? 250),
+    min_payout: Number(a.min_payout ?? 500),
+    payouts_taken: Number(a.payouts_taken ?? 0),
+    last_payout_at: a.last_payout_at,
+  };
+}
 
 export type IncomingExecution = {
   broker_fill_id: string;

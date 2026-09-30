@@ -98,3 +98,30 @@ alter table executions enable row level security;
 alter table trades enable row level security;
 alter table trade_journal enable row level security;
 alter table daily_notes enable row level security;
+
+-- ===== v2: Apex 50K EOD (PA), checklist de reglas y capturas =====
+alter table accounts add column if not exists phase text not null default 'pa';
+alter table accounts add column if not exists daily_loss_limit numeric default 1000;
+alter table accounts add column if not exists daily_profit_target numeric;
+alter table accounts add column if not exists min_day_profit numeric not null default 250;
+alter table accounts add column if not exists min_payout numeric not null default 500;
+alter table accounts add column if not exists payouts_taken int not null default 0;
+alter table accounts add column if not exists last_payout_at date;
+alter table accounts alter column drawdown_type set default 'eod_trail';
+alter table accounts alter column drawdown_amount set default 2000;
+alter table accounts alter column consistency_pct set default 50;
+alter table accounts alter column min_trading_days set default 5;
+
+create table if not exists rules (
+  id uuid primary key default gen_random_uuid(),
+  text text not null,
+  position int not null default 0,
+  active boolean not null default true,
+  created_at timestamptz not null default now()
+);
+alter table rules enable row level security;
+
+alter table trade_journal add column if not exists rules_followed text[] not null default '{}';
+alter table trade_journal add column if not exists rules_checked boolean not null default false;
+
+insert into storage.buckets (id, name, public) values ('screenshots', 'screenshots', false) on conflict (id) do nothing;

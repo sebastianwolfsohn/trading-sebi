@@ -4,7 +4,7 @@ import { buildTrades, type Execution } from "../lib/tradeBuilder";
 import { symbolRoot, normalizeSymbol, type Instrument } from "../lib/instruments";
 import { parseTradovateCsv } from "../lib/csv";
 import { tradingDay, parseBrokerDate } from "../lib/time";
-import { computeStats, dailyPnl, apexStatus, type TradeRow } from "../lib/stats";
+import { computeStats, dailyPnl, apexStatus, todayStatus, type TradeRow } from "../lib/stats";
 
 const inst = new Map<string, Instrument>([
   ["MNQ", { root: "MNQ", point_value: 2, tick_size: 0.25, commission_per_side: 0.5 }],
@@ -131,4 +131,31 @@ test("estadísticas y reglas de Apex", () => {
   assert.equal(a.bestDay?.pnl, 600);
   assert.equal(a.consistencyOk, false); // 600/1100 = 54.5% > 30%
   assert.equal(a.profitNeededForConsistency, 900); // 600/0.3 - 1100
+
+  // Apex 50K EOD en PA: el umbral sigue el balance de cierre y frena en 50.100
+  const e = apexStatus(days, trades, { starting_balance: 50000, drawdown_amount: 2000, drawdown_type: "eod_trail", consistency_pct: 50, min_trading_days: 5, min_day_profit: 250, min_payout: 500 });
+  assert.equal(e.balance, 51100);
+  assert.equal(e.liquidation, 49100); // pico de cierre 51.100 - 2.000
+  assert.equal(e.safetyNet, 52100);
+  assert.equal(e.minPayoutBalance, 52600);
+  assert.equal(e.qualifyingDays, 2); // 28/9 (+600) y 30/9 (+300); 29/9 cerró +200
+  assert.equal(e.consistencyOk, false); // 600/1100 = 54.5% > 50%
+  assert.equal(e.payoutEligible, false);
+  assert.equal(e.contractLimit, 2);
+  const big = apexStatus([{ day: "2026-09-01", pnl: 2500, trades: 1 }], [], { starting_balance: 50000, drawdown_amount: 2000, drawdown_type: "eod_trail", consistency_pct: 50, min_trading_days: 5 });
+  assert.equal(big.liquidation, 50100);
+  assert.equal(big.trailingLocked, true);
+  assert.equal(big.contractLimit, 3);
+});
+
+test("resumen de hoy contra el límite diario", () => {
+  const mk = (id: string, pnl: number): TradeRow => ({
+    id, account_id: "acc", symbol: "MNQZ6", direction: "long",
+    opened_at: "2026-09-30T14:00:00Z", closed_at: "2026-09-30T14:10:00Z", max_qty: 1,
+    avg_entry: 1, avg_exit: 1, gross_pnl: pnl, commissions: 0, net_pnl: pnl, execution_ids: [],
+  });
+  const t = todayStatus([mk("a", -300), mk("b", -350)], "America/New_York", 1000, 500, new Date("2026-09-30T16:00:00Z"));
+  assert.equal(t.pnl, -650);
+  assert.equal(t.dllRemaining, 350);
+  assert.equal(t.level, "warn");
 });

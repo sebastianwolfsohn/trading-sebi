@@ -1,12 +1,13 @@
 import Link from "next/link";
-import { getAccounts, getTrades } from "@/lib/db";
+import { accountRules, getAccounts, getRules, getTrades } from "@/lib/db";
 import { TRADING_TZ, DISPLAY_TZ } from "@/lib/supabase";
-import { byHour, computeStats, dailyPnl, equityCurve, groupBy, weekdayOf, WEEKDAYS, type GroupRow } from "@/lib/stats";
+import { byHour, computeStats, dailyPnl, equityCurve, groupBy, rulesImpact, todayStatus, weekdayOf, WEEKDAYS, type GroupRow } from "@/lib/stats";
 import { tradingDay } from "@/lib/time";
 import { money, pct, pnlClass } from "@/lib/format";
 import { EquityChart, PnlBars } from "@/components/Charts";
 import { PnlCalendar, Stat } from "@/components/Calendar";
 import { AccountPicker } from "@/components/AccountPicker";
+import { TodayCard } from "@/components/TodayCard";
 
 export const dynamic = "force-dynamic";
 
@@ -15,6 +16,10 @@ export default async function Dashboard({ searchParams }: { searchParams: Promis
   const accounts = await getAccounts();
   const accountId = sp.account || undefined;
   let trades = await getTrades(accountId);
+  const acc = accounts.find((a) => a.id === accountId) ?? accounts[0];
+  const rules = acc ? accountRules(acc) : null;
+  const today = todayStatus(trades, TRADING_TZ, rules?.daily_loss_limit, rules?.daily_profit_target);
+  const activeRules = await getRules();
 
   const range = sp.range ?? "all";
   if (range !== "all") {
@@ -32,6 +37,7 @@ export default async function Dashboard({ searchParams }: { searchParams: Promis
   const byWeekday = groupBy(trades, (t) => weekdayOf(tradingDay(t.closed_at!, TRADING_TZ)), WEEKDAYS);
   const hours = byHour(trades, DISPLAY_TZ);
   const openTrades = trades.filter((t) => !t.closed_at).length;
+  const impact = rulesImpact(trades, activeRules.map((r) => r.text));
 
   return (
     <div className="space-y-6">
@@ -45,6 +51,8 @@ export default async function Dashboard({ searchParams }: { searchParams: Promis
           Todavía no hay trades. Instalá la extensión o <Link href="/import" className="text-accent underline">importá un CSV de Tradovate</Link>.
         </div>
       )}
+
+      <TodayCard t={today} dll={rules?.daily_loss_limit ?? null} target={rules?.daily_profit_target ?? null} />
 
       <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
         <Stat label="P&L neto" value={money(stats.netPnl)} tone={pnlClass(stats.netPnl)} sub={`${stats.trades} trades cerrados${openTrades ? ` · ${openTrades} abiertos` : ""}`} />
@@ -74,6 +82,18 @@ export default async function Dashboard({ searchParams }: { searchParams: Promis
           <div className="label mb-2">Por día de la semana</div>
           <PnlBars data={byWeekday} xKey="key" height={200} />
         </div>
+      </div>
+
+      <div className="card">
+        <div className="label mb-2">¿Cumplir tus reglas paga?</div>
+        {impact.checked === 0 ? (
+          <p className="text-sm text-muted">Marcá el checklist de reglas en tus trades y acá vas a ver la diferencia en win rate y P&L.</p>
+        ) : (
+          <div className="grid gap-3 sm:grid-cols-2">
+            <ImpactBox title="Cumpliendo todas" d={impact.follow} good />
+            <ImpactBox title="Rompiendo alguna" d={impact.broke} />
+          </div>
+        )}
       </div>
 
       <div className="grid gap-4 md:grid-cols-2">
@@ -120,6 +140,18 @@ function GroupTable({ title, rows }: { title: string; rows: GroupRow[] }) {
           ))}
         </tbody>
       </table>
+    </div>
+  );
+}
+
+function ImpactBox({ title, d, good }: { title: string; d: { trades: number; pnl: number; winRate: number; avg: number }; good?: boolean }) {
+  return (
+    <div className={`rounded-lg border p-3 ${good ? "border-win/30" : "border-loss/30"}`}>
+      <div className="text-sm font-medium">{title}</div>
+      <div className="mt-1 text-sm text-muted">
+        {d.trades} trades · win rate {pct(d.winRate, 0)} · promedio <span className={pnlClass(d.avg)}>{money(d.avg)}</span>
+      </div>
+      <div className={`mt-1 text-lg font-semibold ${pnlClass(d.pnl)}`}>{money(d.pnl)}</div>
     </div>
   );
 }
