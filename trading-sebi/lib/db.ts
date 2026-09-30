@@ -93,7 +93,8 @@ export async function rebuildTrades(accountId: string, symbols: string[]) {
     }
     const existing = check(await db().from("trades").select("id").eq("account_id", accountId).eq("symbol", symbol)) as { id: string }[];
     const keep = new Set(built.map((t) => t.id));
-    const stale = existing.map((t) => t.id).filter((id) => !keep.has(id));
+    // Los trades cargados a mano (id "manual:...") no salen de ejecuciones: nunca se borran acá.
+    const stale = existing.map((t) => t.id).filter((id) => !keep.has(id) && !id.startsWith("manual:"));
     if (stale.length) check(await db().from("trades").delete().in("id", stale).select("id"));
   }
 }

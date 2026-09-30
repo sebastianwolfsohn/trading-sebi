@@ -53,6 +53,7 @@ export default async function TradesPage({ searchParams }: { searchParams: Promi
           </select>
           <button className="btn">Filtrar</button>
           <Link href="/trades" className="btn-ghost">Limpiar</Link>
+          <Link href="/trades/new" className="btn">+ Trade manual</Link>
         </form>
       </div>
 
@@ -78,15 +79,16 @@ export default async function TradesPage({ searchParams }: { searchParams: Promi
             )}
             {trades.map((t) => {
               const r = rMultiple(t);
+              const manual = t.id.startsWith("manual:");
               return (
                 <tr key={t.id} className="hover:bg-line/40">
                   <td><Link href={`/trades/${encodeURIComponent(t.id)}`} className="text-accent hover:underline">{formatDateTime(t.opened_at, DISPLAY_TZ)}</Link></td>
                   <td>{t.symbol}</td>
                   <td className={t.direction === "long" ? "text-win" : "text-loss"}>{t.direction === "long" ? "Long" : "Short"}</td>
                   <td className="text-right">{num(t.max_qty, 0)}</td>
-                  <td className="text-right">{num(t.avg_entry)}</td>
-                  <td className="text-right">{num(t.avg_exit)}</td>
-                  <td>{durationLabel(t.opened_at, t.closed_at)}</td>
+                  <td className="text-right">{manual ? "—" : num(t.avg_entry)}</td>
+                  <td className="text-right">{manual ? "—" : num(t.avg_exit)}</td>
+                  <td>{manual ? "manual" : durationLabel(t.opened_at, t.closed_at)}</td>
                   <td className={`text-right font-medium ${pnlClass(t.closed_at ? pnlOf(t) : null)}`}>{t.closed_at ? money(pnlOf(t)) : "abierto"}</td>
                   <td className="text-right">{r == null ? "—" : r.toFixed(2)}</td>
                   <td className="text-muted">{t.journal?.setup ?? ""}</td>

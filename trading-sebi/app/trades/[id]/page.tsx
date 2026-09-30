@@ -44,6 +44,17 @@ async function saveJournal(formData: FormData) {
   redirect(`/trades/${encodeURIComponent(id)}?saved=1`);
 }
 
+async function removeTrade(formData: FormData) {
+  "use server";
+  const id = String(formData.get("trade_id"));
+  const data = await getTrade(id);
+  if (data) {
+    for (const e of data.executions) await deleteExecution(e.id);
+    await db().from("trades").delete().eq("id", id);
+  }
+  redirect("/trades");
+}
+
 async function removeExecution(formData: FormData) {
   "use server";
   await deleteExecution(String(formData.get("execution_id")));
@@ -137,6 +148,11 @@ export default async function TradeDetail({ params, searchParams }: { params: Pr
         </form>
 
         <div className="space-y-4">
+          <form action={removeTrade} className="card">
+            <input type="hidden" name="trade_id" value={t.id} />
+            <button className="w-full rounded-lg border border-loss/40 px-3 py-2 text-sm text-loss hover:bg-loss/10">Borrar este trade</button>
+            <p className="mt-2 text-xs text-muted">Borra el trade{executions.length ? " y sus ejecuciones" : ""}. No se puede deshacer.</p>
+          </form>
           <div className="card">
             <div className="label mb-2">Ejecuciones</div>
             <ul className="space-y-2 text-sm">
