@@ -1,0 +1,31 @@
+{
+  "name": "trading-sebi",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "test": "tsx --test tests/*.test.ts"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "2.117.2",
+    "next": "15.5.26",
+    "papaparse": "5.5.3",
+    "react": "19.1.1",
+    "react-dom": "19.1.1",
+    "recharts": "2.15.4",
+    "server-only": "^0.0.1"
+  },
+  "devDependencies": {
+    "@types/node": "22.15.3",
+    "@types/papaparse": "5.3.16",
+    "@types/react": "19.1.12",
+    "@types/react-dom": "19.1.9",
+    "autoprefixer": "10.4.21",
+    "postcss": "8.5.6",
+    "tailwindcss": "3.4.19",
+    "tsx": "4.20.5",
+    "typescript": "5.9.2"
+  }
+}
